@@ -2,7 +2,8 @@ from datetime import datetime, timezone
 import json
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from ..models import AuditLog, ExperimentUnit, RevenueReview, ScreeningPlan, TicketObservation, User
+from ..models import AuditLog, ExperimentUnit, RevenueReview, ScreeningPlan, User
+from ..services import hall_change
 from .analytics import balance_ratio, bootstrap_difference, stratified_effect
 
 def audit(db: Session, user: User | None, action, entity_type, entity_id, detail=""):
@@ -25,10 +26,9 @@ def start_experiment(db: Session, plan: ScreeningPlan, user: User):
     audit(db, user, "experiment_started", "screening_plan", plan.id, f"units={len(units)}")
 
 def run_analysis(db: Session, plan: ScreeningPlan, user: User, force_stratified=False):
-    units = db.query(ExperimentUnit).filter_by(plan_id=plan.id).all()
-    unit_map = {u.id: u for u in units}
-    observations = db.query(TicketObservation).filter(TicketObservation.unit_id.in_([u.id for u in units])).all()
-    rows = [{"sold": o.sold, "group": unit_map[o.unit_id].group_name, "stratum": f"{unit_map[o.unit_id].hall_name}/{unit_map[o.unit_id].session_code}"} for o in observations]
+    units, unit_map, observations, hall_by_id = hall_change.observations_with_halls(db, plan)
+    rows = [{"sold": o.sold, "group": unit_map[o.unit_id].group_name,
+             "stratum": f"{hall_by_id[o.id]}/{unit_map[o.unit_id].session_code}"} for o in observations]
     control = [r for r in rows if r["group"] == "control"]
     treatment = [r for r in rows if r["group"] == "treatment"]
     result = bootstrap_difference(control, treatment)

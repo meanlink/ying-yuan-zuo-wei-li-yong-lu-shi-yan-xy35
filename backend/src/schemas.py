@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from pydantic import BaseModel, Field
 
 class LoginIn(BaseModel):
@@ -29,14 +29,7 @@ class ObservationCreate(BaseModel):
     sold: bool
     price_paid: float = Field(ge=0, le=1000)
     source: str = "box-office"
+    observed_at: datetime | None = None
 
 class ReviewApprove(BaseModel):
     notes: str = ""
-
-class ObservationCreate(BaseModel):
-    unit_id: int
-    ticket_code: str
-    seat_label: str
-    sold: bool
-    price_paid: float = Field(ge=0, le=1000)
-    source: str = "box-office"

@@ -43,3 +43,7 @@
 #toast{position:fixed;z-index:4;right:20px;bottom:20px;max-width:min(430px,calc(100vw - 40px));padding:11px 15px;background:var(--ink);color:var(--paper);box-shadow:0 8px 25px oklch(25% .03 65 / .18);opacity:0;visibility:hidden;transform:translateY(6px);transition:opacity .18s ease,transform .18s ease;pointer-events:none}
 #toast.show{visibility:visible;opacity:1;transform:translateY(0)}
 #toast[data-kind="error"]{background:oklch(42% .135 31)}
+.hall-moved{display:inline-block;margin-left:6px;padding:2px 6px;font:700 10px "Space Mono",monospace;color:var(--orange);background:oklch(67% .16 55 / .12);letter-spacing:.05em}
+.hall-origin{color:var(--muted);font-size:12px;margin-top:8px}
+.hall-origin b{color:var(--orange)}
+.ops-compare td .hall-moved{margin:0}

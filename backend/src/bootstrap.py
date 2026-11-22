@@ -2,6 +2,7 @@ import time
 from sqlalchemy import text
 from .database import Base, engine
 from . import operations_models  # Registers the operational tables before create_all.
+from . import hall_models  # Registers temporary hall-change tables before create_all.
 from .settlement import models as settlement_models  # Registers the pilot settlement table.
 from .config import SEED_DEMO
 

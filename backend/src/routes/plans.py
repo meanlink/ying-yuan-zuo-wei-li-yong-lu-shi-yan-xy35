@@ -1,9 +1,13 @@
+from datetime import datetime, timezone
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from ..auth import current_user, require_roles
 from ..database import get_db
 from ..models import ExperimentUnit, RevenueReview, ScreeningPlan, TicketObservation, User
 from ..schemas import ObservationCreate, PlanCreate, UnitCreate, ReviewApprove
+from ..services import hall_change
 from ..services.operations import plan_by_id, require_closeouts
 from ..services.workflow import approve_review, audit, run_analysis, start_experiment
 
@@ -12,17 +16,22 @@ router = APIRouter(prefix="/plans", tags=["plans"])
 def plan_json(p, db):
     units = db.query(ExperimentUnit).filter_by(plan_id=p.id).all()
     latest = db.query(RevenueReview).filter_by(plan_id=p.id).order_by(RevenueReview.id.desc()).first()
-    return {"id": p.id, "natural_key": p.natural_key, "film_title": p.film_title, "version_name": p.version_name, "show_date": str(p.show_date), "show_time": p.show_time, "hall_name": p.hall_name, "seat_capacity": p.seat_capacity, "base_price": p.base_price, "status": p.status, "unit_count": len(units), "latest_review": review_json(latest) if latest else None}
+    current = hall_change.current_hall_map(db, units)
+    current_halls = sorted({segment.hall_name for segment in current.values()})
+    return {"id": p.id, "natural_key": p.natural_key, "film_title": p.film_title, "version_name": p.version_name, "show_date": str(p.show_date), "show_time": p.show_time, "hall_name": p.hall_name, "current_halls": current_halls, "seat_capacity": p.seat_capacity, "base_price": p.base_price, "status": p.status, "unit_count": len(units), "latest_review": review_json(latest) if latest else None}
 
-def unit_json(u):
-    return {"id": u.id, "plan_id": u.plan_id, "session_code": u.session_code, "hall_name": u.hall_name, "seat_zone": u.seat_zone, "group_name": u.group_name, "seat_count": u.seat_count, "status": u.status, "started_at": u.started_at.isoformat() if u.started_at else None}
+def unit_json(u, current_hall=None):
+    return {"id": u.id, "plan_id": u.plan_id, "session_code": u.session_code, "hall_name": u.hall_name, "current_hall_name": current_hall or u.hall_name, "seat_zone": u.seat_zone, "group_name": u.group_name, "seat_count": u.seat_count, "status": u.status, "started_at": u.started_at.isoformat() if u.started_at else None}
 
-def observation_json(o, unit_map):
+def observation_json(o, unit_map, hall_by_id):
     u = unit_map[o.unit_id]
-    return {"id": o.id, "unit_id": o.unit_id, "ticket_code": o.ticket_code, "seat_label": o.seat_label, "sold": o.sold, "price_paid": o.price_paid, "observed_at": o.observed_at.isoformat(), "source": o.source, "group_name": u.group_name, "hall_name": u.hall_name, "session_code": u.session_code, "seat_zone": u.seat_zone}
+    return {"id": o.id, "unit_id": o.unit_id, "ticket_code": o.ticket_code, "seat_label": o.seat_label, "sold": o.sold, "price_paid": o.price_paid, "observed_at": o.observed_at.isoformat(), "source": o.source, "group_name": u.group_name, "hall_name": u.hall_name, "effective_hall_name": hall_by_id.get(o.id, u.hall_name), "session_code": u.session_code, "seat_zone": u.seat_zone}
 
 def review_json(r):
-    return {"id": r.id, "plan_id": r.plan_id, "analysis_status": r.analysis_status, "sample_size": r.sample_size, "control_rate": r.control_rate, "treatment_rate": r.treatment_rate, "absolute_diff": r.absolute_diff, "ci_low": r.ci_low, "ci_high": r.ci_high, "stratified_effect": r.stratified_effect, "balance_ratio": r.balance_ratio, "is_stratified": r.is_stratified, "notes": r.notes, "approved_at": r.approved_at.isoformat() if r.approved_at else None}
+    strata = []
+    if r is not None and r.result_json:
+        strata = json.loads(r.result_json).get("strata", [])
+    return {"id": r.id, "plan_id": r.plan_id, "analysis_status": r.analysis_status, "sample_size": r.sample_size, "control_rate": r.control_rate, "treatment_rate": r.treatment_rate, "absolute_diff": r.absolute_diff, "ci_low": r.ci_low, "ci_high": r.ci_high, "stratified_effect": r.stratified_effect, "balance_ratio": r.balance_ratio, "is_stratified": r.is_stratified, "strata": strata, "notes": r.notes, "approved_at": r.approved_at.isoformat() if r.approved_at else None}
 
 @router.get("")
 def list_plans(db: Session = Depends(get_db), user: User = Depends(current_user)):
@@ -38,7 +47,10 @@ def create_plan(payload: PlanCreate, db: Session = Depends(get_db), user: User =
 
 @router.get("/{plan_id}/units")
 def list_units(plan_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    return {"items": [unit_json(u) for u in db.query(ExperimentUnit).filter_by(plan_id=plan_id).order_by(ExperimentUnit.hall_name, ExperimentUnit.session_code, ExperimentUnit.seat_zone).all()]}
+    plan_by_id(db, plan_id)
+    units = db.query(ExperimentUnit).filter_by(plan_id=plan_id).order_by(ExperimentUnit.hall_name, ExperimentUnit.session_code, ExperimentUnit.seat_zone).all()
+    current = hall_change.current_hall_map(db, units)
+    return {"items": [unit_json(u, current[u.id].hall_name) for u in units]}
 
 @router.post("/{plan_id}/units")
 def create_unit(plan_id: int, payload: UnitCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("planner", "admin"))):
@@ -57,19 +69,43 @@ def start(plan_id: int, db: Session = Depends(get_db), user: User = Depends(requ
 
 @router.get("/{plan_id}/observations")
 def observations(plan_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    units = db.query(ExperimentUnit).filter_by(plan_id=plan_id).all(); ids = [u.id for u in units]
-    items = db.query(TicketObservation).filter(TicketObservation.unit_id.in_(ids)).order_by(TicketObservation.id.desc()).all() if ids else []
-    return {"items": [observation_json(o, {u.id: u for u in units}) for o in items]}
+    plan = plan_by_id(db, plan_id)
+    units, unit_map, rows, hall_by_id = hall_change.observations_with_halls(db, plan)
+    items = sorted(rows, key=lambda row: row.id, reverse=True)
+    return {"items": [observation_json(o, unit_map, hall_by_id) for o in items]}
 
 @router.post("/{plan_id}/observations")
 def add_observation(plan_id: int, payload: ObservationCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("boxoffice", "admin"))):
-    plan_by_id(db, plan_id, lock=True)
+    plan = plan_by_id(db, plan_id, lock=True)
+    hall_change.ensure_assignments(db, plan)
     unit = db.get(ExperimentUnit, payload.unit_id)
     if not unit or unit.plan_id != plan_id: raise HTTPException(404, "实验单元不存在")
     if unit.status != "started": raise HTTPException(409, "只能向已开始的场次录入观测")
     if db.query(TicketObservation).filter_by(ticket_code=payload.ticket_code).first(): raise HTTPException(409, "票务观测编码重复")
-    o = TicketObservation(**payload.model_dump()); db.add(o); audit(db, user, "ticket_observed", "ticket_observation", payload.ticket_code, f"sold={payload.sold}"); db.commit()
-    return {"ok": True, "id": o.id}
+    data = payload.model_dump()
+    observed_at = data.pop("observed_at", None)
+    if observed_at is None:
+        observed_at = datetime.now(timezone.utc)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    observed_naive = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
+    if unit.started_at:
+        started = unit.started_at
+        if started.tzinfo is not None:
+            started = started.astimezone(timezone.utc).replace(tzinfo=None)
+        if observed_naive < started:
+            raise HTTPException(422, "票务发生时间早于场次开始时间，不能归入该实验单元")
+    if observed_naive > now_naive:
+        raise HTTPException(422, "票务发生时间不能晚于当前时间")
+    timeline = hall_change.assignment_timeline(db, [unit]).get(unit.id, [])
+    effective_hall = hall_change.resolve_hall(timeline, observed_at) if timeline else unit.hall_name
+    o = TicketObservation(**data, observed_at=observed_at)
+    db.add(o); db.flush()
+    audit(db, user, "ticket_observed", "ticket_observation", payload.ticket_code,
+          f"sold={payload.sold};hall={effective_hall};at={observed_at.isoformat()}")
+    db.commit()
+    return {"ok": True, "id": o.id, "effective_hall_name": effective_hall}
 
 @router.post("/{plan_id}/analysis")
 def analysis(plan_id: int, stratified: bool = False, db: Session = Depends(get_db), user: User = Depends(require_roles("analyst", "admin"))):
