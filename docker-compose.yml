@@ -1,0 +1,101 @@
+name: cinema-seat-experiment
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-cinema-seat-experiment}-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cinema}
+      POSTGRES_USER: ${POSTGRES_USER:-cinema}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cinema_pass}
+    ports:
+      - "${DB_PORT:-17756}:5432"
+    volumes:
+      - cinema_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cinema} -d ${POSTGRES_DB:-cinema}"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-cinema-seat-experiment}-redis
+    volumes:
+      - cinema_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  backend:
+    build: ./backend
+    container_name: ${COMPOSE_PROJECT_NAME:-cinema-seat-experiment}-backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://cinema:cinema_pass@db:5432/cinema}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-cinema-seat-secret}
+      SEED_DEMO: ${SEED_DEMO:-true}
+    ports:
+      - "${BACKEND_PORT:-19256}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - cinema_shared:/shared
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    build: ./backend
+    container_name: ${COMPOSE_PROJECT_NAME:-cinema-seat-experiment}-worker
+    command: ["python", "-m", "src.worker"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://cinema:cinema_pass@db:5432/cinema}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - cinema_shared:/shared
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -f /shared/worker-heartbeat && python -c "import os,time; assert time.time()-os.path.getmtime('/shared/worker-heartbeat') < 20"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  frontend:
+    build: ./frontend
+    container_name: ${COMPOSE_PROJECT_NAME:-cinema-seat-experiment}-frontend
+    ports:
+      - "${FRONTEND_PORT:-18256}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  cinema_postgres_data:
+    name: cinema-seat-experiment-postgres
+  cinema_redis_data:
+    name: cinema-seat-experiment-redis
+  cinema_shared:
+    name: cinema-seat-experiment-shared

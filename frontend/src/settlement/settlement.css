@@ -1,0 +1,10 @@
+.settlement-board { display: grid; gap: 16px; }
+.pilot-settlement > h3 { margin: 0; }
+.settlement-form, .settlement-breakdown, .settlement-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.settlement-form label { display: grid; gap: 6px; font-size: .88rem; font-weight: 600; }
+.settlement-form input, .settlement-form select { min-width: 0; width: 100%; padding: .6rem; border: 1px solid #d0cce0; border-radius: .45rem; }
+.settlement-form .button { align-self: end; }
+.settlement-metrics > div { display: grid; gap: 6px; padding: 14px; border-radius: 10px; background: #f2efff; }
+.settlement-metrics strong { font-size: 1.35rem; }
+.settlement-breakdown > div { padding: 9px 0; border-bottom: 1px solid #e3dfe9; }
+.settlement-breakdown dd { margin: 2px 0 0; font-weight: 600; }
